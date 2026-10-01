@@ -6,11 +6,9 @@ import {
   clearAccountError,
   extractApiKey,
   isValidApiKey,
-  shouldLogAuthFailure,
 } from "../services/auth.js";
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
 import { getSettings } from "@/lib/localDb";
-import { getClientIp } from "@/lib/auth/loginLimiter";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
@@ -27,7 +25,6 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
-
 
 /**
  * Handle chat completion request
@@ -55,9 +52,8 @@ export async function handleChat(request, clientRawRequest = null) {
   // Claude Code marks a 1M-context request as `<model>[1m]`; the marker matches
   // no combo, alias or provider/model pair, so it must not reach resolution.
   // The capability travels in the anthropic-beta header, forwarded as-is.
-  let { model: modelStr, contextMarker } = stripModelContextMarker(body.model);
+  const { model: modelStr, contextMarker } = stripModelContextMarker(body.model);
   if (contextMarker) body.model = modelStr;
-
 
   // Request summary is emitted as the unified "▶" line in chatCore (has fmt/thinking/account)
 
@@ -71,57 +67,23 @@ export async function handleChat(request, clientRawRequest = null) {
     log.debug("AUTH", "No API key provided (local mode)");
   }
 
- if (typeof modelStr !== "string" || !modelStr.trim()) {
-    log.warn("CHAT", "Missing model");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
-  }
-
-  // Enforce API key if provided or if required by settings
+  // Enforce API key if enabled in settings
   const settings = await getSettings();
-  if (settings.requireApiKey && !apiKey) {
-    if (shouldLogAuthFailure("chat", getClientIp(request), null)) {
+  if (settings.requireApiKey) {
+    if (!apiKey) {
       log.warn("AUTH", "Missing API key (requireApiKey=true)");
+      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
     }
-    return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
-  }
-
-  if (apiKey) {
-    const clientIp = getClientIp(request);
-    const valid = await isValidApiKey(apiKey, modelStr, clientIp);
-    if (valid === "KEY_DISABLED") {
-      log.warn("AUTH", "API key is disabled");
-      return errorResponse(HTTP_STATUS.FORBIDDEN, "API key is disabled");
-    }
-    if (valid === "QUOTA_EXCEEDED") {
-      log.warn("AUTH", "API key quota exceeded");
-      return errorResponse(HTTP_STATUS.TOO_MANY_REQUESTS, "API key token limit exceeded");
-    }
-    if (valid === "RPM_EXCEEDED") {
-      log.warn("AUTH", "API key RPM limit exceeded");
-      return errorResponse(HTTP_STATUS.TOO_MANY_REQUESTS, "API key rate limit exceeded (RPM limit reached)");
-    }
-    if (valid === "TPM_EXCEEDED") {
-      log.warn("AUTH", "API key TPM limit exceeded");
-      return errorResponse(HTTP_STATUS.TOO_MANY_REQUESTS, "API key rate limit exceeded (TPM limit reached)");
-    }
-    if (valid === "IP_NOT_ALLOWED") {
-      log.warn("AUTH", `IP "${clientIp}" not in whitelist for this API key`);
-      return errorResponse(HTTP_STATUS.FORBIDDEN, `Client IP (${clientIp}) is not authorized to use this API key`);
-    }
-    if (valid === "MODEL_NOT_ALLOWED") {
-      log.warn("AUTH", `Model "${modelStr}" not allowed for this API key`);
-      return errorResponse(HTTP_STATUS.FORBIDDEN, `Model "${modelStr}" is not allowed for this API key`);
-    }
- if (valid === "KEY_EXPIRED") {
- log.warn("AUTH", "API key expired");
- return errorResponse(HTTP_STATUS.FORBIDDEN, "API key has expired");
- }
-    if (!valid && settings.requireApiKey) {
-      if (shouldLogAuthFailure("chat", clientIp, apiKey.slice(0, 8))) {
-        log.warn("AUTH", "Invalid API key (requireApiKey=true)");
-      }
+    const valid = await isValidApiKey(apiKey);
+    if (!valid) {
+      log.warn("AUTH", "Invalid API key (requireApiKey=true)");
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
     }
+  }
+
+  if (!modelStr) {
+    log.warn("CHAT", "Missing model");
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   }
 
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
@@ -132,34 +94,17 @@ export async function handleChat(request, clientRawRequest = null) {
   const requiredCapabilities = detectRequiredCapabilities(body);
 
   // Check if model is a combo (has multiple models with fallback)
-  // A studio name may itself point at a combo; resolve it first so the combo
-  // strategy applies, with a hop limit so a studio/combo cycle cannot recurse.
-  let comboEntryName = modelStr;
-  if (!modelStr.includes("/")) {
-    try {
-      const { getStudioModel } = await import("@/lib/db/repos/modelEditorRepo.js");
-      const seenStudios = new Set([modelStr]);
-      for (let hop = 0; hop < 3; hop += 1) {
-        const studioTarget = await getStudioModel(comboEntryName);
-        if (!studioTarget?.targetModel) break;
-        const next = String(studioTarget.targetModel).trim();
-        if (!next || next.includes("/") || seenStudios.has(next)) break;
-        comboEntryName = next;
-        seenStudios.add(next);
-      }
-    } catch { /* studio lookup is best-effort; fall through to the raw name */ }
-  }
-  const comboModels = await getComboModels(comboEntryName);
+  const comboModels = await getComboModels(modelStr);
   if (comboModels) {
     // Check for combo-specific strategy first, fallback to global
     const comboStrategies = settings.comboStrategies || {};
-    const comboSpecificStrategy = comboStrategies[comboEntryName]?.fallbackStrategy;
+    const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
     const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
     const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings);
     const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
     if (comboStrategy === "fusion") {
-      log.info("CHAT", `Combo "${comboEntryName}" with ${comboModels.length} models (strategy: fusion)`);
+      log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
       return handleFusionChat({
         body,
         models: comboModels,
@@ -172,14 +117,14 @@ export async function handleChat(request, clientRawRequest = null) {
           return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
         },
         log,
-        comboName: comboEntryName,
-        judgeModel: comboStrategies[comboEntryName]?.judgeModel,
-        tuning: comboStrategies[comboEntryName]?.fusionTuning,
+        comboName: modelStr,
+        judgeModel: comboStrategies[modelStr]?.judgeModel,
+        tuning: comboStrategies[modelStr]?.fusionTuning,
       });
     }
 
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
-    log.info("CHAT", `Combo "${comboEntryName}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+    log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
     return handleComboChat({
       body,
       models: augmentedModels,
@@ -188,13 +133,13 @@ export async function handleChat(request, clientRawRequest = null) {
         adapterAdded
       ),
       log,
-      comboName: comboEntryName,
+      comboName: modelStr,
       comboStrategy,
       comboStickyLimit
     });
   }
 
-  // Single model request - may still switch to a capacity-adapter model if the
+  // Single model request — may still switch to a capacity-adapter model if the
   // target lacks a capability the request needs (e.g. no vision, request has an image).
   const soloAugmented = augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings);
   if (soloAugmented.length > 1) {
@@ -222,41 +167,21 @@ export async function handleChat(request, clientRawRequest = null) {
 async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null) {
   const modelInfo = await getModelInfo(modelStr);
 
-  // If provider is null, this might be a combo name - check and handle.
-  // A studio name may also resolve here: getModelInfo answers a studio that
-  // points at a combo with the combo name in `model`, so use it as the entry.
+  // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
-    const comboEntryName = (!modelStr.includes("/") && modelInfo.model && modelInfo.model !== modelStr)
-      ? modelInfo.model
-      : modelStr;
-    const comboModels = await getComboModels(comboEntryName);
+    const comboModels = await getComboModels(modelStr);
     if (comboModels) {
-      // A studio calling into a combo may carry its own system prompt; it is
-      // applied here because this branch returns before the override block.
-      try {
-        const { getStudioModel } = await import("@/lib/db/repos/modelEditorRepo.js");
-        const entryStudio = comboEntryName !== modelStr ? await getStudioModel(modelStr) : null;
-        if (entryStudio?.systemPrompt) {
-          if (Array.isArray(body.messages)) {
-            body.messages.unshift({ role: "system", content: entryStudio.systemPrompt });
-          } else if (typeof body.system === "string") {
-            body.system = entryStudio.systemPrompt + "\n\n" + body.system;
-          } else {
-            body.system = entryStudio.systemPrompt;
-          }
-        }
-      } catch { /* fail open */ }
       const chatSettings = await getSettings();
       // Check for combo-specific strategy first, fallback to global
       const comboStrategies = chatSettings.comboStrategies || {};
-      const comboSpecificStrategy = comboStrategies[comboEntryName]?.fallbackStrategy;
+      const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
       const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
       const requiredCapabilities = detectRequiredCapabilities(body);
       const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, chatSettings);
       const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
       if (comboStrategy === "fusion") {
-        log.info("CHAT", `Combo "${comboEntryName}" with ${comboModels.length} models (strategy: fusion)`);
+        log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
         return handleFusionChat({
           body,
           models: comboModels,
@@ -269,14 +194,14 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
             return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
           },
           log,
-          comboName: comboEntryName,
-          judgeModel: comboStrategies[comboEntryName]?.judgeModel,
-          tuning: comboStrategies[comboEntryName]?.fusionTuning,
+          comboName: modelStr,
+          judgeModel: comboStrategies[modelStr]?.judgeModel,
+          tuning: comboStrategies[modelStr]?.fusionTuning,
         });
       }
 
       const comboStickyLimit = chatSettings.comboStickyRoundRobinLimit;
-      log.info("CHAT", `Combo "${comboEntryName}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
       return handleComboChat({
         body,
         models: augmentedModels,
@@ -294,52 +219,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
   }
 
-  let { provider, model } = modelInfo;
- let effectiveModel = model;
-
- // Model overrides: a Model Studio name wins over a per-model override.
- try {
-  const { getStudioModel, getModelOverride } = await import("@/lib/db/repos/modelEditorRepo.js");
-  const studio = await getStudioModel(modelStr);
-  const override = studio || (provider ? await getModelOverride(`${provider}|${model}`) : null);
-  if (override) {
-   if (!studio && override.targetModel) {
-    // A model override may point at another provider, and then its target is a model
-    // string too: resolving it keeps a `kr/...` prefix out of the upstream body.
-    const target = String(override.targetModel).trim();
-    const resolvedTarget = target.includes("/") ? await getModelInfo(target) : null;
-    if (resolvedTarget?.provider) {
-     provider = resolvedTarget.provider;
-     model = resolvedTarget.model;
-     effectiveModel = resolvedTarget.model;
-    } else {
-     effectiveModel = target;
-    }
-   }
-   if (override.systemPrompt) {
-    if (Array.isArray(body.messages)) {
-     body.messages.unshift({ role: "system", content: override.systemPrompt });
-    } else if (typeof body.system === "string") {
-     body.system = override.systemPrompt + "\n\n" + body.system;
-    } else {
-     body.system = override.systemPrompt;
-    }
-   }
-   if (studio) {
-    log.info("CHAT", `Custom model ${modelStr} -> ${provider}/${effectiveModel}`);
-   }
-  }
- } catch { /* fail open */ }
+  const { provider, model } = modelInfo;
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
-
-  // What the caller may be told: an alias never names the model that served it.
-  // Alias callers may omit it; derive from the alias the same way upstream does.
-  requestedModel = requestedModel || (modelStr && modelStr !== `${provider}/${effectiveModel}` ? modelStr : null);
-  const calledModel = requestedModel || `${provider}/${effectiveModel}`;
 
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
@@ -356,11 +241,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         const errorMsg = lastError || credentials.lastError || "Unavailable";
         const status = HTTP_STATUS.SERVICE_UNAVAILABLE;
         log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
-        return unavailableResponse(status, `[${calledModel}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
+        return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman, lastHeaders);
       }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
-        return errorResponse(HTTP_STATUS.NOT_FOUND, `No credentials are serving ${calledModel} right now`);
+        return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
       }
       log.warn("CHAT", "No more accounts available", { provider });
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable", lastHeaders);
@@ -383,9 +268,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
     const result = await handleChatCore({
-      body: { ...body, model: `${provider}/${effectiveModel}` },
-      modelInfo: { provider, model: effectiveModel },
- requestedModel,
+      body: { ...body, model: `${provider}/${model}` },
+      modelInfo: { provider, model },
       credentials: refreshedCredentials,
       log,
       clientRawRequest,
@@ -394,12 +278,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       apiKey,
       ccFilterNaming: !!chatSettings.ccFilterNaming,
       rtkEnabled: !!chatSettings.rtkEnabled,
-      contextPruningEnabled: !!chatSettings.contextPruningEnabled,
-      maxMessagesLimit: chatSettings.maxMessagesLimit || 20,
-      contextPruningLevel: chatSettings.contextPruningLevel || "full",
-      semanticCacheEnabled: !!chatSettings.semanticCacheEnabled,
-      semanticCacheTtlHours: chatSettings.semanticCacheTtlHours ?? 3,
-      semanticCacheMaxEntries: chatSettings.semanticCacheMaxEntries ?? 1000,
       headroomEnabled: !!chatSettings.headroomEnabled,
       headroomUrl: chatSettings.headroomUrl || DEFAULT_HEADROOM_URL,
       headroomCompressUserMessages: !!chatSettings.headroomCompressUserMessages,
@@ -415,10 +293,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
       onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
-      // Undefined means on: the fallback is opt-out so a malformed tool payload
-      // never reaches the caller, and `toolCallFallback: false` restores the
-      // previous pass-the-error-through behaviour.
-      toolCallFallbackEnabled: chatSettings.toolCallFallback !== false,
       // Per-provider user overrides (custom headers / connect timeout) from settings
       providerOverrides: (chatSettings.providerOverrides || {})[provider] || null,
       // Detect source format by endpoint + body
