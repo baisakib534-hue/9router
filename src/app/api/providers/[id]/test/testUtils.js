@@ -29,7 +29,7 @@ const OAUTH_TEST_CONFIG = {
     authHeader: "Authorization",
     authPrefix: "Bearer ",
     extraHeaders: { "Content-Type": "application/json", "originator": "codex_cli_rs", "User-Agent": `codex_cli_rs/${CODEX_CLI_VERSION}` },
-    // Minimal invalid body - triggers fast 400 without consuming quota
+    // Minimal invalid body — triggers fast 400 without consuming quota
     body: JSON.stringify({ model: "gpt-5.3-codex", input: [], stream: false, store: false }),
     // 400 (bad request) means auth succeeded; only 401/403 means token is bad
     acceptStatuses: [400],
@@ -66,7 +66,7 @@ const OAUTH_TEST_CONFIG = {
   qoder: {
     // Test by hitting Qoder's userinfo endpoint with the device token.
     // refreshable: false because the device-flow refresh endpoint returns
-    // 403 for our flow (users re-login when expired). No checkExpiry -
+    // 403 for our flow (users re-login when expired). No checkExpiry —
     // we want the actual URL probe to run so revoked tokens surface.
     url: "https://openapi.qoder.sh/api/v1/userinfo",
     method: "GET",
@@ -93,13 +93,16 @@ const OAUTH_TEST_CONFIG = {
   },
   cline: { refreshable: true },
   gitlab: {
-    // Test by hitting the GitLab user API - requires api or read_user scope
+    // Test by hitting the GitLab user API — requires api or read_user scope
     url: "https://gitlab.com/api/v4/user",
     method: "GET",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
   "codebuddy-cn": { tokenExists: true },
+  // codebuddy-intl uses the same JWT token structure as codebuddy-cn
+  // (access + refresh token pair, ~1-year expiry) — same test strategy (#4232).
+  "codebuddy-intl": { tokenExists: true },
   kimchi: {
     url: KIMCHI_CONFIG.validationUrl || "https://api.cast.ai/v1/llm/openai/supported-providers",
     method: "GET",
@@ -111,7 +114,7 @@ const OAUTH_TEST_CONFIG = {
     },
     refreshable: false,
   },
-  // Grok CLI / Grok Build - probe /v1/user (no inference quota). Headers mirror official CLI.
+  // Grok CLI / Grok Build — probe /v1/user (no inference quota). Headers mirror official CLI.
   "grok-cli": {
     url: PROVIDERS["grok-cli"]?.userUrl || "https://cli-chat-proxy.grok.com/v1/user",
     method: "GET",
@@ -127,14 +130,14 @@ const OAUTH_TEST_CONFIG = {
       }),
     },
     refreshable: true,
-    // Subscription spending-limit is not an auth failure - token is fine, credits aren't.
+    // Subscription spending-limit is not an auth failure — token is fine, credits aren't.
     // Accept 402 so the connection stays "active" with a warning (same idea as Codex 400).
     acceptStatuses: [402],
     softFailMessage: {
       402: "Connected, but Grok Build credits are exhausted (spending limit). Add credits or upgrade SuperGrok.",
     },
   },
-  // Muse Code subscription - probe /v1/models with the minted LLM|… key
+  // Muse Code subscription — probe /v1/models with the minted LLM|… key
   "muse": {
     url: "https://api.meta.ai/v1/models",
     method: "GET",
@@ -148,7 +151,7 @@ const OAUTH_TEST_CONFIG = {
 /**
  * Classify an OAuth probe response as success / soft-success / hard-fail.
  * Soft success (e.g. 402 spending-limit on Grok CLI) means auth works but the
- * account cannot spend - keep connection active and surface a warning.
+ * account cannot spend — keep connection active and surface a warning.
  * Exported for unit tests.
  */
 export function classifyOAuthProbeResult(res, config, bodyText = "") {
@@ -163,7 +166,7 @@ export function classifyOAuthProbeResult(res, config, bodyText = "") {
 
   // Soft success only when the provider configured an explicit message for this
   // status (e.g. Grok CLI 402 spending-limit). Codex-style acceptStatuses:[400]
-  // stays silent success - 400 there only proves auth, not a user-facing warning.
+  // stays silent success — 400 there only proves auth, not a user-facing warning.
   if (!res.ok && config?.acceptStatuses?.includes(status)) {
     const softMap = config.softFailMessage || {};
     if (softMap[status]) {
@@ -745,47 +748,40 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         const res = await fetchWithConnectionProxy("https://llm.chutes.ai/v1/models", { headers: { Authorization: `Bearer ${connection.apiKey}` } }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
       }
-      case "deepseek-web": {
-        let token = connection.apiKey.trim();
-        if (token.startsWith("{")) {
-          try {
-            const parsed = JSON.parse(token);
-            if (parsed && typeof parsed.value === "string") token = parsed.value.trim();
-          } catch {}
-        }
-        if (token.includes("userToken=")) {
-          const m = token.match(/userToken=([^;]+)/);
-          if (m) token = m[1].trim();
-        }
-        if (token.startsWith("Bearer ")) token = token.slice(7).trim();
-        token = token.replace(/^["']|["']$/g, "").trim();
-
-        if (!token) return { valid: false, error: "Invalid token format" };
-
-        const res = await fetchWithConnectionProxy("https://chat.deepseek.com/api/v0/users/current", {
+      case "grok-web": {
+        const token = connection.apiKey.startsWith("sso=") ? connection.apiKey.slice(4) : connection.apiKey;
+        const randomHex = (n) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => b.toString(16).padStart(2, "0")).join("");
+        const statsigId = Buffer.from("e:TypeError: Cannot read properties of null (reading 'children')").toString("base64");
+        const res = await fetchWithConnectionProxy("https://grok.com/rest/app-chat/conversations/new", {
+          method: "POST",
+          headers: {
+            Accept: "*/*", "Content-Type": "application/json",
+            Cookie: `sso=${token}`, Origin: "https://grok.com", Referer: "https://grok.com/",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            "x-statsig-id": statsigId, "x-xai-request-id": crypto.randomUUID(),
+            traceparent: `00-${randomHex(16)}-${randomHex(8)}-00`,
+          },
+          body: JSON.stringify({ temporary: true, modelName: "grok-4", message: "ping", fileAttachments: [], imageAttachments: [], disableSearch: false, enableImageGeneration: false, sendFinalMetadata: true }),
+        }, effectiveProxy);
+        const valid = res.status !== 401 && res.status !== 403;
+        return { valid, error: valid ? null : "Invalid SSO cookie" };
+      }
+      case "perplexity-web": {
+        let sessionToken = connection.apiKey;
+        if (sessionToken.startsWith("__Secure-next-auth.session-token=")) sessionToken = sessionToken.slice("__Secure-next-auth.session-token=".length);
+        const res = await fetchWithConnectionProxy("https://www.perplexity.ai/api/auth/session", {
           method: "GET",
           headers: {
-            Authorization: `Bearer ${token}`,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            Origin: "https://chat.deepseek.com",
-            Referer: "https://chat.deepseek.com/",
-            "x-app-version": "20241129.0",
-            "x-client-platform": "web",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            Cookie: `__Secure-next-auth.session-token=${sessionToken}`,
           },
-        }, effectiveProxy).catch(() => null);
-
-        if (!res || !res.ok) return { valid: false, error: "Invalid token or connection failed" };
+        }, effectiveProxy);
+        if (!res.ok) return { valid: false, error: "Invalid session cookie" };
         const data = await res.json().catch(() => null);
-        if (!data || data.code !== 0 || (data.data && data.data.biz_code !== undefined && data.data.biz_code !== 0)) {
-          return { valid: false, error: data?.msg || data?.data?.biz_msg || "Invalid token - rejected by chat.deepseek.com" };
-        }
-        return { valid: true, error: null };
+        const valid = !!(data && data.user);
+        return { valid, error: valid ? null : "Session expired — re-paste cookie" };
       }
       case "opencode": {
-        // Connectivity-only probe: GET /models never exercises the Responses
-        // tool path, so a green dashboard test does NOT rule out 403
-        // FreeTierError on POST /zen/v1/responses with tools (requires
-        // bash+read decoys + tool_choice auto - see OpenCodeExecutor).
         const res = await fetchWithConnectionProxy("https://opencode.ai/zen/v1/models", {
           headers: { Authorization: "Bearer public", "User-Agent": "opencode/1.18.31" },
         }, effectiveProxy);
@@ -847,7 +843,7 @@ case "llm7": {
         return { valid: res.ok, error: res.ok ? null : "Invalid API key or base URL" };
       }
       case "kimchi": {
-        // Dual-auth: same validation endpoint as the OAuth flow - the token (API key
+        // Dual-auth: same validation endpoint as the OAuth flow — the token (API key
         // or OAuth access token) is sent as Authorization: Bearer.
         const url = KIMCHI_CONFIG.validationUrl || "https://api.cast.ai/v1/llm/openai/supported-providers";
         const res = await fetchWithConnectionProxy(url, {
