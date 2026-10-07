@@ -2,8 +2,8 @@
 // (add/remove/alter a table, column, or index in TABLES). It drives the
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
-// to bump only skips that backup - it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 12;
+// to bump only skips that backup — it does NOT break the additive auto-sync.
+export const SCHEMA_VERSION = 2;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -83,18 +83,10 @@ export const TABLES = {
       machineId: "TEXT",
       isActive: "INTEGER DEFAULT 1",
       createdAt: "TEXT NOT NULL",
-      tokenLimit: "INTEGER DEFAULT 0",
-      usedTokens: "INTEGER DEFAULT 0",
-      resetInterval: "TEXT DEFAULT 'never'",
-      lastResetAt: "TEXT",
-      allowedModels: "TEXT DEFAULT '*'",
-      rpmLimit: "INTEGER DEFAULT 0",
-      tpmLimit: "INTEGER DEFAULT 0",
-      ipWhitelist: "TEXT DEFAULT ''",
-      expiresAt: "TEXT",
-      systemPrompt: "TEXT DEFAULT ''",
-      permissions: "TEXT DEFAULT ''",
-      createdBy: "TEXT DEFAULT ''",
+      // Per-key access control. Additive columns, picked up by
+      // syncSchemaFromTables() on boot; existing rows read as unrestricted (0).
+      accessRestricted: "INTEGER DEFAULT 0",
+      accessAllow: "TEXT",
     },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
   },
@@ -104,8 +96,6 @@ export const TABLES = {
       name: "TEXT UNIQUE NOT NULL",
       kind: "TEXT",
       models: "TEXT NOT NULL",
-      // 0 means auto: the window follows the largest member model.
-      contextWindow: "INTEGER DEFAULT 0",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
     },
@@ -148,42 +138,6 @@ export const TABLES = {
       dateKey: "TEXT PRIMARY KEY",
       data: "TEXT NOT NULL",
     },
-  },
-  // Persistent security trail. loginLimiter kept failures in a Map that died
-  // with the process, so repeated probing across restarts was invisible.
-  securityEvents: {
-    columns: {
-      id: "INTEGER PRIMARY KEY AUTOINCREMENT",
-      at: "TEXT NOT NULL",
-      type: "TEXT NOT NULL",
-      severity: "TEXT NOT NULL",
-      ip: "TEXT NOT NULL",
-      actor: "TEXT",
-      method: "TEXT",
-      path: "TEXT",
-      status: "INTEGER DEFAULT 0",
-      detail: "TEXT",
-      userAgent: "TEXT",
-    },
-    indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_se_at ON securityEvents(at DESC)",
-      "CREATE INDEX IF NOT EXISTS idx_se_severity ON securityEvents(severity)",
-      "CREATE INDEX IF NOT EXISTS idx_se_type ON securityEvents(type)",
-    ],
-  },
-  // Recent dashboard/API traffic (excluding LLM streams), trimmed in place.
-  accessEvents: {
-    columns: {
-      id: "INTEGER PRIMARY KEY AUTOINCREMENT",
-      at: "TEXT NOT NULL",
-      method: "TEXT",
-      path: "TEXT",
-      status: "INTEGER DEFAULT 0",
-      ms: "INTEGER DEFAULT 0",
-      ip: "TEXT",
-      role: "TEXT",
-    },
-    indexes: ["CREATE INDEX IF NOT EXISTS idx_ae_at ON accessEvents(at DESC)"],
   },
   requestDetails: {
     columns: {
