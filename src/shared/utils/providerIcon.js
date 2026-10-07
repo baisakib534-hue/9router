@@ -2,24 +2,16 @@
 // Alias related brands; session-cache 404s so one miss never spams again.
 
 const ICON_ALIASES = {
-  mimocode: "xiaomi-mimo",
-  "opencode-zen": "opencode",
   "perplexity-agent": "perplexity",
   "gitlab-duo": "gitlab",
   "vercel-ai-gateway": "vercel",
   "ollama-search": "ollama",
-  "deepseek-web": "deepseek",
-  "gemini-web": "gemini",
-  "kimi-web": "kimi",
+  // MiniMax Code rides the existing MiniMax brand mark
+  "minimax-code": "minimax",
+  "minimax-code-global": "minimax",
 };
 
-const TYPE_PREFIX_ALIASES = {
-  "openai-compatible-": "openai",
-  "anthropic-compatible-": "anthropic",
-  "custom-embedding-": "selfhosted-embedding",
-};
-
-// Runtime only - first 404 remembers id for the whole session
+// Runtime only — first 404 remembers id for the whole session
 const failedIds = new Set();
 
 function normalizeId(providerId) {
@@ -32,13 +24,7 @@ export function resolveProviderIconId(providerId) {
   const id = normalizeId(providerId);
   if (!id) return "";
   if (failedIds.has(id)) return "";
-  let aliased = ICON_ALIASES[id] || id;
-  for (const [prefix, target] of Object.entries(TYPE_PREFIX_ALIASES)) {
-    if (aliased.startsWith(prefix)) {
-      aliased = target;
-      break;
-    }
-  }
+  const aliased = ICON_ALIASES[id] || id;
   if (failedIds.has(aliased)) return "";
   return aliased;
 }
