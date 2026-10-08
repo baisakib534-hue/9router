@@ -28,7 +28,12 @@ import {
   exchangeTokens,
 } from "@/lib/oauth/providers/index.js";
 
-const realFetch = globalThis.fetch;
+// QA-9ROUTER-18: proxyFetch patches globalThis.fetch once with a symbol-tagged
+// wrapper. A stub that captures globalThis.fetch AFTER the import captures the
+// wrapper and re-enters it from resolveInnerFetch's inner slot -> infinite
+// recursion. vi.hoisted runs BEFORE the file's imports, capturing the pristine
+// fetch; the stub must call THAT, never the wrapper.
+const { realFetch } = vi.hoisted(() => ({ realFetch: globalThis.fetch }));
 
 // Never hit the real network in tests: cloud.zed.dev calls are best-effort
 // (postExchange try/catch) — fail them fast and loud instead.
