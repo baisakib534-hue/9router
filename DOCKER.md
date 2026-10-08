@@ -94,6 +94,8 @@ If Headroom runs on the Docker host instead of as a sidecar, use `http://host.do
 
 ## Update to latest
 
+For a standalone `docker run` deployment, update manually:
+
 ```bash
 docker pull decolua/9router:latest
 docker rm -f 9router
@@ -105,6 +107,32 @@ To pin a specific version instead of following `latest`, use a numbered image ta
 ```bash
 docker pull decolua/9router:0.5.81
 ```
+
+## Automatic updates with Docker Compose
+
+The repository's `docker-compose.yml` includes [freshdock](https://github.com/Turbootzz/freshdock), a health-gated container updater. It checks the 9Router image nightly and recreates the service only when a newer image is available. The updater verifies the new container using the `/api/health` Docker health check and rolls back to the previous container if the new image fails verification. The existing `9router-data` volume is preserved.
+
+Start or update the Compose stack with:
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose ps
+docker inspect --format '{{json .State.Health}}' 9router
+docker logs -f freshdock
+```
+
+Only the 9Router service is opted into scheduled updates. Headroom is not opted in, and freshdock excludes itself from updating. The updater image is pinned to a specific version so its own runtime does not silently change; update that pin deliberately when upgrading freshdock.
+
+### Disable automatic updates
+
+Remove the `freshdock` service from `docker-compose.yml` and remove the `freshdock.enable` and `freshdock.mode` labels from the `9router` service, then run `docker compose up -d`. To keep the updater but stop updates to 9Router, set `freshdock.mode: "off"` or remove `freshdock.enable`.
+
+### Security note
+
+freshdock needs access to `/var/run/docker.sock` to inspect and recreate containers. Docker socket access is effectively host-level administrative access; only run an updater you trust, keep its image pinned, and do not expose the Docker API over an unauthenticated network. Automatic updates follow the moving `decolua/9router:latest` tag. For deterministic deployments, use a numbered image tag and disable the `freshdock` update labels.
+
+The health check confirms that `/api/health` responds successfully; it cannot prove that every configured upstream provider or integration is working.
 
 ---
 
@@ -142,11 +170,11 @@ The `v` prefix is used only for the git tag; image tags omit it. A stable tag pu
 The workflow rejects SemVer build metadata such as `v1.2.3+build.7` because the `+` form is not a valid Docker image tag. The git tag and both `package.json` versions must match exactly.
 
 ```bash
-# Use scripts/release.js (recommended)
-node scripts/release.js "Release title" "Notes"
-
-# Or manually
-git tag v0.5.81 && git push origin v0.5.81
+# After verifying release readiness
+VERSION="$(node -p "require('./package.json').version")"
+test "$(node -p "require('./cli/package.json').version")" = "$VERSION"
+git tag "v$VERSION"
+git push origin "v$VERSION"
 ```
 
 To republish an existing tag, run the `Build and Push Docker Image` workflow manually and provide the exact tag, for example `v0.5.81`, in the `release_tag` input. Manual runs publish the numbered tag but leave `latest` unchanged by default:
@@ -175,6 +203,12 @@ During recovery, the selected tag remains the application source while the Docke
 
 The workflow is tag-driven. Creating a git tag does not automatically create a GitHub Release, so the Releases page and the published package/image tags can be at different versions unless a maintainer creates a release separately.
 
+### Release freshness guard
+
+The `Release freshness guard` workflow runs daily and on demand. It checks that the root and CLI package versions agree, the matching `vX.Y.Z` git tag exists, and the same numbered image is present on Docker Hub. It fails with an actionable summary when the source version has not been tagged or published.
+
+This guard intentionally **does not create tags or publish images automatically**: a package version bump alone is not sufficient evidence that a release is approved. It makes a missed release handoff visible while keeping the existing tag-driven publishing and smoke-test gates in control.
+
 The upstream repository needs these repository secrets for Docker Hub publishing:
 
 - `DOCKERHUB_USERNAME`
@@ -184,4 +218,6 @@ GHCR publishing uses the workflow's `GITHUB_TOKEN` with package write permission
 
 The optional repository variables `ALPINE_MIRROR` and `NPM_REGISTRY` can override the default package mirrors used by the CI Docker build.
 
-Workflow: `.github/workflows/docker-publish.yml`
+Workflows:
+- `.github/workflows/docker-publish.yml`
+- `.github/workflows/release-freshness.yml`
