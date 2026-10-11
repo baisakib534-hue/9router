@@ -4,6 +4,7 @@ import {
   clearAccountError,
   extractApiKey,
   isValidApiKey,
+  validateApiKeyWithRules,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
@@ -59,10 +60,13 @@ export async function handleImageGeneration(request) {
 
   const apiKey = extractApiKey(request);
   const settings = await getSettings();
-  if (settings.requireApiKey) {
-    if (!apiKey) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
-    const valid = await isValidApiKey(apiKey);
-    if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
+  if (apiKey) {
+    const keyCheck = await validateApiKeyWithRules(apiKey, modelStr);
+    if (!keyCheck.valid) {
+      return errorResponse(keyCheck.status || HTTP_STATUS.UNAUTHORIZED, keyCheck.error);
+    }
+  } else if (settings.requireApiKey) {
+    return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
   }
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
@@ -98,20 +102,22 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
+  log.info("ROUTING", `Provider: ${provider}, Model: ${model}`);
 
-  // noAuth providers — no credential needed
+  // No-auth local providers (sdwebui, comfyui) don't need credentials
   if (NO_AUTH_PROVIDERS.has(provider)) {
     const result = await handleImageGenerationCore({
-      body,
+      body: { ...body, model },
       modelInfo: { provider, model },
       credentials: null,
+      wantsStream,
       binaryOutput,
+      log,
     });
     if (result.success) return result.response;
     return errorResponse(result.status || HTTP_STATUS.BAD_GATEWAY, result.error || "Image generation failed");
   }
 
-  // Credentialed providers — fallback loop
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
@@ -122,11 +128,10 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
         const errorMsg = lastError || credentials.lastError || "Unavailable";
-        const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
-        return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
+        return unavailableResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }
       if (excludeConnectionIds.size === 0) {
-        return errorResponse(HTTP_STATUS.BAD_REQUEST, `No credentials for provider: ${provider}`);
+        return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
       }
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
@@ -134,17 +139,17 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
 
     const result = await handleImageGenerationCore({
-      body,
+      body: { ...body, model },
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
-      streamToClient: wantsStream,
+      wantsStream,
       binaryOutput,
+      log,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {
-          accessToken: newCreds.accessToken,
-          refreshToken: newCreds.refreshToken,
-          providerSpecificData: newCreds.providerSpecificData,
-          testStatus: "active"
+          ...newCreds,
+          existingProviderSpecificData: credentials.providerSpecificData,
+          testStatus: "active",
         });
       },
       onUsage: (usage) => {
@@ -159,14 +164,14 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
-      }
+      },
     });
 
     if (result.success) return result.response;
 
-    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
-
-    if (shouldFallback) {
+    const cooldown = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
+    if (cooldown.shouldFallback) {
+      log.warn("FALLBACK", `Account unavailable (${result.status}) -> trying next account`);
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;
       lastStatus = result.status;
