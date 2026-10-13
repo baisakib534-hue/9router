@@ -56,8 +56,8 @@ export function generateSessionId(timestamp = Date.now()) {
   }
   counter++;
 
-  const current = BigInt(timestamp) * 0x1000n + BigInt(counter);
-  const value = ~current;
+  const current = BigInt(timestamp) * 4096n + BigInt(counter);
+  const value = (~current) & 281474976710655n;
   const time = Array.from({ length: 6 }, (_, index) =>
     Number((value >> BigInt(40 - 8 * index)) & 0xffn)
       .toString(16)
