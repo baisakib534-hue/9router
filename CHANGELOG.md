@@ -1,3 +1,31 @@
+# v0.5.167 (2026-10-13) · 30 commits
+
+## Features
+- **Upstream Integration**: port Decolua upstream release features (v0.5.91 - v0.5.99)
+- **Providers**: add AWS Bedrock provider with AWS SSO credential support
+- **Providers**: add Meta Muse provider with OAuth login and model catalog
+- **Providers**: add MiniMax Code (mcode) credits provider and token usage tracker
+- **Providers**: add TinyFish search and fetch provider
+- **Providers**: add v1m System One provider and Cloudflare AI clef-flash support
+- **Providers**: per-provider custom HTTP header overrides from the registry
+- **Models**: add Claude Sonnet 5.5 & Opus 5.5 across Antigravity, Kiro, and Claude native
+- **Models**: expose 1M context variants for GPT-6/5.6 and add GPT-6.1 Sol in Codex
+- **Models**: update MITM defaults to Gemini 3.8 and refresh Antigravity catalog
+- **Models**: add ElevenLabs Scribe speech-to-text support
+- **Models**: add Z.ai OAuth login to GLM Coding (dual-auth)
+- **Hermes**: per-profile configuration across API, Dashboard and CLI
+- **Proxy Pools**: add Netlify relay proxy pool
+- **Keys**: per-API-key access control restricting keys to selected combos and models
+- **CLI**: add connect command for remote 9router servers
+- **Quota**: sync ?provider= URL param with provider filter for bookmarkable deep links
+
+## Fixes
+- **OpenCode**: encode inverted timestamp in translated session IDs, fixing 403 FreeTierError for all non-OpenCode clients (curl, Claude Code, etc.) (fixes #4780) -Custom
+- **OpenCode**: match exact 4096 multiplier and 281474976710655 bitmask for session ID generation -Custom
+- **Models**: declare pluginMarks inside studioModels loop and resolve aggregateComboCapabilities arguments -Custom
+- **Keys**: restore matchesAllowedModels export for dashboard guard and usage repo -Custom
+- **Executors**: align mimo-free provider config key with upstream -Custom
+
 # v0.5.166 (2026-10-12) · 1 commit
 
 ## Features
