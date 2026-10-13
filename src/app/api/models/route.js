@@ -236,9 +236,12 @@ export async function GET() {
     for (const combo of combos) {
       const members = Array.isArray(combo.models) ? combo.models : [];
       if (members.length === 0) continue;
-      const aggregated = aggregateComboCapabilities(members, comboByName, 0, Number(combo.contextWindow) || 0);
+      const aggregated = aggregateComboCapabilities(members, comboByName);
       if (!aggregated) continue;
       const comboCaps = { ...aggregated };
+      if (Number(combo.contextWindow) > 0) {
+        comboCaps.contextWindow = Number(combo.contextWindow);
+      }
       // A combo's marks come from its members: the plugin selection was made per
       // model when the combo was configured, so those are the marks that apply.
       // The previous lookup wrote into an undefined `caps` and matched a stray
