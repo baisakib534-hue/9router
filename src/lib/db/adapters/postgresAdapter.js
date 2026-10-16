@@ -170,8 +170,10 @@ export async function createPostgresAdapter(connectionString) {
       async exec(sql) {
         // DDL / multi-statement: pg handles semicolon-separated statements.
         // Skip empty statements to avoid "empty query" errors.
+        // Translate SQLite AUTOINCREMENT to Postgres SERIAL.
         const statements = sql.split(";").map((s) => s.trim()).filter(Boolean);
-        for (const stmt of statements) {
+        for (let stmt of statements) {
+          stmt = stmt.replace(/INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT/i, "SERIAL PRIMARY KEY");
           await queryFn(stmt);
         }
       },
