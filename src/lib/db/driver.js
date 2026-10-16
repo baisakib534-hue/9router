@@ -56,19 +56,36 @@ async function trySqlJs() {
   }
 }
 
+async function tryPostgres() {
+  // Only when DATABASE_URL is set — e.g. Supabase transaction pooler.
+  // Tried FIRST so persistent storage wins over ephemeral SQLite.
+  const url = process.env.DATABASE_URL;
+  if (!url) return null;
+  try {
+    const { createPostgresAdapter } = await import("./adapters/postgresAdapter.js");
+    return await createPostgresAdapter(url);
+  } catch (e) {
+    console.warn(`[DB] postgres unavailable, falling back to SQLite: ${e.message}`);
+    return null;
+  }
+}
+
 async function initAdapter() {
   ensureDirs();
-  // Order per runtime:
+  // Order:
+  //   DATABASE_URL set: postgres → (SQLite fallback chain below)
   //   Bun:  bun:sqlite → sql.js
   //   Node: better-sqlite3 → node:sqlite (≥22.5) → sql.js
-  let adapter = await tryBunSqlite();
+  let adapter = await tryPostgres();
+  if (!adapter) adapter = await tryBunSqlite();
   if (!adapter) adapter = await tryBetterSqlite();
   if (!adapter) adapter = await tryNodeSqlite();
   if (!adapter) adapter = await trySqlJs();
-  if (!adapter) throw new Error("[DB] No SQLite driver available (bun/better/node/sql.js all failed)");
+  if (!adapter) throw new Error("[DB] No DB driver available (postgres + bun/better/node/sql.js all failed)");
 
   if (!state.logged) {
-    console.log(`[DB] Driver: ${adapter.driver} | file: ${DATA_FILE}`);
+    const where = adapter.driver === "postgres" ? "postgres" : `file: ${DATA_FILE}`;
+    console.log(`[DB] Driver: ${adapter.driver} | ${where}`);
     state.logged = true;
   }
 
