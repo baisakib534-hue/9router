@@ -10,8 +10,8 @@ function rowToNode(row) {
     id: row.id,
     type: row.type,
     name: row.name,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
+    createdAt: row.createdAt || row.createdat,
+    updatedAt: row.updatedAt || row.updatedat,
   };
 }
 

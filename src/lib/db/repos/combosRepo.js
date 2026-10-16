@@ -9,8 +9,8 @@ function rowToCombo(row) {
     name: row.name,
     kind: row.kind,
     models: parseJson(row.models, []),
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
+    createdAt: row.createdAt || row.createdat,
+    updatedAt: row.updatedAt || row.updatedat,
   };
 }
 

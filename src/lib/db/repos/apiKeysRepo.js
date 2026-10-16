@@ -9,9 +9,9 @@ function rowToKey(row) {
     id: row.id,
     key: row.key,
     name: row.name,
-    machineId: row.machineId,
-    isActive: row.isActive === 1 || row.isActive === true,
-    createdAt: row.createdAt,
+    machineId: row.machineId || row.machineid,
+    isActive: row.isActive || row.isactive === 1 || row.isActive || row.isactive === true,
+    createdAt: row.createdAt || row.createdat,
     access: keyAccessFromColumns(row.accessRestricted, row.accessAllow),
   };
 }
@@ -85,5 +85,5 @@ export async function validateApiKey(key) {
   const db = await getAdapter();
   const row = await db.get(`SELECT isActive FROM apiKeys WHERE key = ?`, [key]);
   if (!row) return false;
-  return row.isActive === 1 || row.isActive === true;
+  return row.isActive || row.isactive === 1 || row.isActive || row.isactive === true;
 }

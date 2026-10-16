@@ -39,13 +39,13 @@ function rowToConn(row) {
     ...extra,
     id: row.id,
     provider: row.provider,
-    authType: row.authType,
+    authType: row.authType || row.authtype,
     name: row.name,
     email: row.email,
     priority: row.priority,
-    isActive: row.isActive === 1 || row.isActive === true,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
+    isActive: row.isActive || row.isactive === 1 || row.isActive || row.isactive === true,
+    createdAt: row.createdAt || row.createdat,
+    updatedAt: row.updatedAt || row.updatedat,
   };
 }
 
