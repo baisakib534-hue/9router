@@ -9,7 +9,7 @@ function rowToPool(row) {
     ...extra,
     id: row.id,
     isActive: row.isActive || row.isactive === 1 || row.isActive || row.isactive === true,
-    testStatus: row.testStatus || row.teststatus ?? row.teststatus,
+    testStatus: row.testStatus ?? row.teststatus,
     // Postgres lowercases unquoted identifiers; handle both cases
     createdAt: row.createdAt || row.createdat,
     updatedAt: row.updatedAt || row.updatedat,
