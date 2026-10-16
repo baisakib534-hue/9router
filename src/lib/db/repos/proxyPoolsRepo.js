@@ -83,7 +83,18 @@ export async function updateProxyPool(id, data) {
   await db.transaction(async () => {
     const row = await db.get(`SELECT * FROM proxyPools WHERE id = ?`, [id]);
     if (!row) return;
-    const merged = { ...rowToPool(row), ...data, updatedAt: new Date().toISOString() };
+    const existing = rowToPool(row);
+    // Remove null/undefined from data so they don't overwrite existing values
+    const cleanData = Object.fromEntries(
+      Object.entries(data).filter(([_, v]) => v !== null && v !== undefined)
+    );
+    const merged = {
+      ...existing,
+      ...cleanData,
+      // Preserve createdAt from existing if not in update
+      createdAt: cleanData.createdAt || existing.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
     await upsert(db, merged);
     result = merged;
   });
