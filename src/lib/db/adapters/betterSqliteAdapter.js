@@ -44,8 +44,33 @@ export function createBetterSqliteAdapter(filePath) {
     get(sql, params = []) { return prepare(sql).get(...params); },
     all(sql, params = []) { return prepare(sql).all(...params); },
     exec(sql) { return db.exec(sql); },
-    transaction(fn) { return db.transaction(fn)(); },
-    checkpoint() { try { db.pragma("wal_checkpoint(TRUNCATE)"); } catch {} },
+    transaction(fn) {
+      // better-sqlite3's db.transaction() only accepts SYNC callbacks and
+      // throws "Transaction function cannot return a promise" for async ones.
+      // The codebase awaits adapter.transaction(async () => ...) (migrate.js,
+      // legacy JSON import), so support both: run the callback inside a
+      // SAVEPOINT (nesting-safe, same approach as the node:sqlite and sql.js
+      // adapters). Sync callbacks release at once; async callbacks release or
+      // roll back when their promise settles.
+      const sp = `sp_${Math.random().toString(36).slice(2)}`;
+      db.exec(`SAVEPOINT ${sp}`);
+      let result;
+      try {
+        result = fn();
+      } catch (e) {
+        try { db.exec(`ROLLBACK TO ${sp}`); db.exec(`RELEASE ${sp}`); } catch {}
+        throw e;
+      }
+      if (result && typeof result.then === "function") {
+        return result.then(
+                    (value) => { db.exec(`RELEASE ${sp}`); return value; },
+                    (err) => { try { db.exec(`ROLLBACK TO ${sp}`); db.exec(`RELEASE ${sp}`); } catch {} throw err; }
+                  );
+      }
+            db.exec(`RELEASE ${sp}`);
+            return result;
+    },
+          checkpoint() { try { db.pragma("wal_checkpoint(TRUNCATE)"); } catch {} },
     close() {
       clearInterval(checkpointTimer);
       gracefulClose();
